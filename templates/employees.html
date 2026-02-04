@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row">
+    <div class="col-md-4">
+        <h3>Add New Employee</h3>
+        <form action="/add_employee" method="POST" class="card p-4 shadow-sm">
+            <div class="mb-3">
+                <input type="text" name="name" placeholder="Full Name" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <input type="text" name="position" placeholder="Position" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <input type="email" name="email" placeholder="Email" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <input type="number" name="salary" placeholder="Annual Salary" class="form-control" required>
+            </div>
+            <button type="submit" class="btn btn-success w-100">Save Employee</button>
+        </form>
+    </div>
+
+    <div class="col-md-8">
+        <h3>Employee Directory</h3>
+        <table class="table table-hover bg-white shadow-sm">
+            <thead class="table-dark">
+                <tr><th>Name</th><th>Position</th><th>Email</th><th>Salary</th></tr>
+            </thead>
+            <tbody>
+                {% for emp in employees %}
+                <tr>
+                    <td>{{ emp.full_name }}</td>
+                    <td>{{ emp.position }}</td>
+                    <td>{{ emp.email }}</td>
+                    <td>${{ emp.salary }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
