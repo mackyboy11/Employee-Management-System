@@ -19,7 +19,7 @@
             <button type="submit" class="btn btn-success w-100">Create Account</button>
         </form>
         <div class="text-center mt-3">
-            <p>Already have an account? <a href="{{ url_for('login') }}">Login here</a></p>
+            <p>Already have an account? <a href="{{ request.url_for('login') }}">Login here</a></p>
         </div>
     </div>
 </div>

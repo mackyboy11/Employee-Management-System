@@ -1,46 +1,79 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, session
-from flask_sqlalchemy import SQLAlchemy
-from flask_wtf.csrf import CSRFProtect
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from fastapi import FastAPI, Request, Form, Depends
+from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
+from sqlalchemy import create_engine, Column, Integer, String, Float
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from starlette.middleware.sessions import SessionMiddleware
+from starlette.status import HTTP_303_SEE_OTHER
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import os
 import re
 from dotenv import load_dotenv
 
-# Load environment variables
+try:
+    from slowapi import Limiter
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    from slowapi import _rate_limit_exceeded_handler
+    RATE_LIMITING_ENABLED = True
+except Exception:  # pragma: no cover - optional dependency
+    Limiter = None
+    get_remote_address = None
+    RateLimitExceeded = None
+    _rate_limit_exceeded_handler = None
+    RATE_LIMITING_ENABLED = False
+
 load_dotenv()
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-key-change-in-production')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URI', 'sqlite:///company.db')
+# FastAPI application instance
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 
-# Security Settings
-app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'False') == 'True'
-app.config['SESSION_COOKIE_HTTPONLY'] = os.getenv('SESSION_COOKIE_HTTPONLY', 'True') == 'True'
-app.config['SESSION_COOKIE_SAMESITE'] = os.getenv('SESSION_COOKIE_SAMESITE', 'Lax')
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-key-change-in-production")
+DATABASE_URI = os.getenv("DATABASE_URI", "sqlite:///company.db")
 
-db = SQLAlchemy(app)
-csrf = CSRFProtect(app)
-limiter = Limiter(
-    app=app,
-    key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"]
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "False") == "True"
+SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SECRET_KEY,
+    https_only=SESSION_COOKIE_SECURE,
+    same_site=SESSION_COOKIE_SAMESITE,
 )
 
-# --- MODELS (Database Structure) ---
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=False)
+engine = create_engine(DATABASE_URI, connect_args={"check_same_thread": False} if DATABASE_URI.startswith("sqlite") else {})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-class Employee(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    full_name = db.Column(db.String(100), nullable=False)
-    position = db.Column(db.String(100), nullable=False)
-    email = db.Column(db.String(100), unique=True, nullable=False)
-    salary = db.Column(db.Float, nullable=False)
+limiter = None
+if RATE_LIMITING_ENABLED:
+    limiter = Limiter(key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+def rate_limit(rule: str):
+    if RATE_LIMITING_ENABLED and limiter is not None:
+        return limiter.limit(rule)
+    def decorator(func):
+        return func
+    return decorator
+
+# --- MODELS (Database Structure) ---
+class User(Base):
+    __tablename__ = "user"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, nullable=False)
+    password = Column(String(255), nullable=False)
+
+class Employee(Base):
+    __tablename__ = "employee"
+    id = Column(Integer, primary_key=True, index=True)
+    full_name = Column(String(100), nullable=False)
+    position = Column(String(100), nullable=False)
+    email = Column(String(100), unique=True, nullable=False)
+    salary = Column(Float, nullable=False)
 
 # --- PASSWORD MODULE (Logic) ---
 def set_password(password):
@@ -74,92 +107,143 @@ def sanitize_input(user_input):
     """Sanitize user input to prevent XSS attacks"""
     if not isinstance(user_input, str):
         return user_input
-    # Remove potentially dangerous characters
     return secure_filename(user_input) if len(user_input) <= 100 else user_input[:100]
 
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def set_flash(request: Request, message: str, category: str = "info"):
+    request.session["flash"] = {"message": message, "category": category}
+
+def pop_flash(request: Request):
+    return request.session.pop("flash", None)
+
 # --- ROUTES ---
-@app.route('/')
-def index():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    employees = Employee.query.all()
-    return render_template('employees.html', employees=employees)
-
-@app.route('/login', methods=['GET', 'POST'])
-@limiter.limit("5 per minute")
-def login():
-    if request.method == 'POST':
-        username = sanitize_input(request.form.get('username', ''))
-        password = request.form.get('password', '')
-        
-        user = User.query.filter_by(username=username).first()
-        if user and verify_password(user.password, password):
-            session['user_id'] = user.id
-            session.permanent = True
-            flash('✓ Login successful!', 'success')
-            return redirect(url_for('index'))
-        flash('❌ Invalid credentials. Please try again.', 'danger')
-    return render_template('login.html')
-
-@app.route('/register', methods=['GET', 'POST'])
-@limiter.limit("3 per minute")
-def register():
-    if request.method == 'POST':
-        username = sanitize_input(request.form.get('username', ''))
-        password = request.form.get('password', '')
-        confirm_password = request.form.get('confirm_password', '')
-        
-        # Validate username
-        if len(username) < 3:
-            flash('Username must be at least 3 characters long', 'danger')
-        elif not re.match(r'^[a-zA-Z0-9_]+$', username):
-            flash('Username can only contain letters, numbers, and underscores', 'danger')
-        else:
-            # Check if user already exists
-            existing_user = User.query.filter_by(username=username).first()
-            if existing_user:
-                flash('❌ Username already exists', 'danger')
-            elif password != confirm_password:
-                flash('❌ Passwords do not match', 'danger')
-            else:
-                # Validate password strength
-                is_valid, message = validate_password_strength(password)
-                if not is_valid:
-                    flash(f'❌ {message}', 'danger')
-                else:
-                    new_user = User(username=username, password=set_password(password))
-                    db.session.add(new_user)
-                    db.session.commit()
-                    flash('✓ Account created successfully! Please login.', 'success')
-                    return redirect(url_for('login'))
-    return render_template('register.html')
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    flash('✓ You have been logged out.', 'success')
-    return redirect(url_for('login'))
-
-@app.route('/add_employee', methods=['POST'])
-def add_employee():
-    new_emp = Employee(
-        full_name=request.form['name'],
-        position=request.form['position'],
-        email=request.form['email'],
-        salary=request.form['salary']
+@app.get("/", response_class=HTMLResponse, name="index")
+def index(request: Request, db: Session = Depends(get_db)):
+    if "user_id" not in request.session:
+        return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+    employees = db.query(Employee).all()
+    return templates.TemplateResponse(
+        "employees.html",
+        {"request": request, "employees": employees, "flash": pop_flash(request)}
     )
-    db.session.add(new_emp)
-    db.session.commit()
-    return redirect(url_for('index'))
 
-if __name__ == '__main__':
-    with app.app_context():
-        db.create_all() # Generates the DB structure
-        # Create a default admin user if it doesn't exist
-        admin = User.query.filter_by(username='admin').first()
+@app.get("/login", response_class=HTMLResponse, name="login")
+def login_get(request: Request):
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "flash": pop_flash(request)}
+    )
+
+@app.post("/login", response_class=HTMLResponse, name="login_post")
+@rate_limit("5/minute")
+def login_post(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    username = sanitize_input(username)
+    user = db.query(User).filter_by(username=username).first()
+    if user and verify_password(user.password, password):
+        request.session["user_id"] = user.id
+        request.session["permanent"] = True
+        set_flash(request, "✓ Login successful!", "success")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+    set_flash(request, "❌ Invalid credentials. Please try again.", "danger")
+    return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+
+@app.get("/register", response_class=HTMLResponse, name="register")
+def register_get(request: Request):
+    return templates.TemplateResponse(
+        "register.html",
+        {"request": request, "flash": pop_flash(request)}
+    )
+
+@app.post("/register", response_class=HTMLResponse, name="register_post")
+@rate_limit("3/minute")
+def register_post(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    username = sanitize_input(username)
+
+    if len(username) < 3:
+        set_flash(request, "Username must be at least 3 characters long", "danger")
+        return RedirectResponse(url="/register", status_code=HTTP_303_SEE_OTHER)
+    if not re.match(r"^[a-zA-Z0-9_]+$", username):
+        set_flash(request, "Username can only contain letters, numbers, and underscores", "danger")
+        return RedirectResponse(url="/register", status_code=HTTP_303_SEE_OTHER)
+
+    existing_user = db.query(User).filter_by(username=username).first()
+    if existing_user:
+        set_flash(request, "❌ Username already exists", "danger")
+        return RedirectResponse(url="/register", status_code=HTTP_303_SEE_OTHER)
+    if password != confirm_password:
+        set_flash(request, "❌ Passwords do not match", "danger")
+        return RedirectResponse(url="/register", status_code=HTTP_303_SEE_OTHER)
+
+    is_valid, message = validate_password_strength(password)
+    if not is_valid:
+        set_flash(request, f"❌ {message}", "danger")
+        return RedirectResponse(url="/register", status_code=HTTP_303_SEE_OTHER)
+
+    new_user = User(username=username, password=set_password(password))
+    db.add(new_user)
+    db.commit()
+    set_flash(request, "✓ Account created successfully! Please login.", "success")
+    return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+
+@app.get("/logout", name="logout")
+def logout(request: Request):
+    request.session.clear()
+    set_flash(request, "✓ You have been logged out.", "success")
+    return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+
+@app.post("/add_employee", name="add_employee")
+def add_employee(
+    request: Request,
+    name: str = Form(...),
+    position: str = Form(...),
+    email: str = Form(...),
+    salary: float = Form(...),
+    db: Session = Depends(get_db)
+):
+    if "user_id" not in request.session:
+        set_flash(request, "❌ Please log in to continue.", "danger")
+        return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+
+    new_emp = Employee(
+        full_name=sanitize_input(name),
+        position=sanitize_input(position),
+        email=sanitize_input(email),
+        salary=salary
+    )
+    db.add(new_emp)
+    db.commit()
+    set_flash(request, "✓ Employee added successfully!", "success")
+    return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
+@app.on_event("startup")
+def on_startup():
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        admin = db.query(User).filter_by(username="admin").first()
         if not admin:
-            admin_user = User(username='admin', password=set_password('password123'))
-            db.session.add(admin_user)
-            db.session.commit()
+            admin_user = User(username="admin", password=set_password("password123"))
+            db.add(admin_user)
+            db.commit()
             print("✓ Default admin user created: username='admin', password='password123'")
-    app.run(debug=True)
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

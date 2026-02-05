@@ -8,10 +8,15 @@
 <body class="bg-light">
     <nav class="navbar navbar-dark bg-dark mb-4">
         <div class="container">
-            <a class="navbar-brand" href="/">EMPLOYEE PORTAL</a>
+            <a class="navbar-brand" href="{{ request.url_for('index') }}">EMPLOYEE PORTAL</a>
         </div>
     </nav>
     <div class="container">
+        {% if flash %}
+        <div class="alert alert-{{ flash.category }} mt-3" role="alert">
+            {{ flash.message }}
+        </div>
+        {% endif %}
         {% block content %}{% endblock %}
     </div>
 </body>

@@ -1,20 +1,22 @@
-from app import app, db, User, set_password
+from app import SessionLocal, engine, Base, User, set_password
 
-with app.app_context():
-    # Create tables first if they don't exist
-    db.create_all()
-    
-    # Check if user already exists
+def main():
+    Base.metadata.create_all(bind=engine)
+
     username = input("Enter username: ")
     password = input("Enter password: ")
-    
-    existing_user = User.query.filter_by(username=username).first()
-    if existing_user:
-        print(f"❌ User '{username}' already exists!")
-    else:
-        # Create new user
+
+    with SessionLocal() as db:
+        existing_user = db.query(User).filter_by(username=username).first()
+        if existing_user:
+            print(f" User '{username}' already exists!")
+            return
+
         new_user = User(username=username, password=set_password(password))
-        db.session.add(new_user)
-        db.session.commit()
+        db.add(new_user)
+        db.commit()
         print(f"✓ User '{username}' created successfully!")
         print(f"You can now login with username: {username}")
+
+if __name__ == "__main__":
+    main()

@@ -1,5 +1,8 @@
 # Security Features Documentation
 
+## Repository
+**GitHub**: https://github.com/mackyboy11/Employee-Management-System.git
+
 ## Enhanced Security Implementation
 
 This Flask application implements multiple layers of security to protect against common web vulnerabilities.

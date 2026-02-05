@@ -15,7 +15,7 @@ tables = cursor.fetchall()
 print(f"\nAvailable tables: {tables}")
 
 if not tables:
-    print("\n⚠️  No tables found. The database is empty.")
+    print("\n No tables found. The database is empty.")
     print("Make sure the Flask app is running and has created the tables.")
 else:
     for table in tables:
