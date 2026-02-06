@@ -7,9 +7,11 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.status import HTTP_303_SEE_OTHER
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from email_validator import validate_email, EmailNotValidError
 import os
 import re
 from dotenv import load_dotenv
+import secrets
 
 try:
     from slowapi import Limiter
@@ -41,6 +43,7 @@ app.add_middleware(
     secret_key=SECRET_KEY,
     https_only=SESSION_COOKIE_SECURE,
     same_site=SESSION_COOKIE_SAMESITE,
+    httponly=True,  # Prevents JavaScript access to session cookie
 )
 
 engine = create_engine(DATABASE_URI, connect_args={"check_same_thread": False} if DATABASE_URI.startswith("sqlite") else {})
@@ -112,6 +115,33 @@ def sanitize_input(user_input):
         return user_input
     return secure_filename(user_input) if len(user_input) <= 100 else user_input[:100]
 
+def validate_email_format(email):
+    """Validate email format"""
+    try:
+        validate_email(email, check_deliverability=False)
+        return True, "Email is valid"
+    except EmailNotValidError as e:
+        return False, str(e)
+
+def validate_salary(salary):
+    """Validate salary is positive and reasonable"""
+    if salary is None or salary <= 0:
+        return False, "Salary must be greater than 0"
+    if salary > 1000000:
+        return False, "Salary exceeds maximum allowed amount"
+    return True, "Salary is valid"
+
+def generate_csrf_token(request: Request):
+    """Generate and store CSRF token in session"""
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+    return request.session["csrf_token"]
+
+def verify_csrf_token(request: Request, token: str) -> bool:
+    """Verify CSRF token from form"""
+    stored_token = request.session.get("csrf_token")
+    return stored_token and secrets.compare_digest(stored_token, token)
+
 def get_db():
     db = SessionLocal()
     try:
@@ -131,9 +161,10 @@ def index(request: Request, db: Session = Depends(get_db)):
     if "user_id" not in request.session:
         return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
     employees = db.query(Employee).all()
+    csrf_token = generate_csrf_token(request)
     return templates.TemplateResponse(
         "employees.html",
-        {"request": request, "employees": employees, "flash": pop_flash(request)}
+        {"request": request, "employees": employees, "flash": pop_flash(request), "csrf_token": csrf_token}
     )
 
 @app.get("/login", response_class=HTMLResponse, name="login")
@@ -220,16 +251,40 @@ def add_employee(
     salary: float = Form(...),
     department: str = Form(None),
     location: str = Form(None),
+    csrf_token: str = Form(None),
     db: Session = Depends(get_db)
 ):
     if "user_id" not in request.session:
         set_flash(request, "Please log in to continue.", "danger")
         return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
 
+    # Verify CSRF token
+    if not csrf_token or not verify_csrf_token(request, csrf_token):
+        set_flash(request, "Security token expired. Please try again.", "danger")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
+    # Validate email
+    is_valid_email, email_msg = validate_email_format(email)
+    if not is_valid_email:
+        set_flash(request, f"Invalid email: {email_msg}", "danger")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
+    # Validate salary
+    is_valid_salary, salary_msg = validate_salary(salary)
+    if not is_valid_salary:
+        set_flash(request, salary_msg, "danger")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
+    # Check email uniqueness
+    existing_emp = db.query(Employee).filter_by(email=email).first()
+    if existing_emp:
+        set_flash(request, "Email already exists", "danger")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
     new_emp = Employee(
         full_name=sanitize_input(name),
         position=sanitize_input(position),
-        email=sanitize_input(email),
+        email=email.lower().strip(),
         salary=salary,
         department=sanitize_input(department) if department else None,
         location=sanitize_input(location) if location else None,
@@ -338,12 +393,23 @@ def toggle_leave(request: Request, emp_id: int, db: Session = Depends(get_db)):
 def on_startup():
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
-        admin = db.query(User).filter_by(username="admin").first()
-        if not admin:
-            admin_user = User(username="admin", password=set_password("password123"))
-            db.add(admin_user)
-            db.commit()
-            print("✓ Default admin user created: username='admin', password='password123'")
+        # Only create admin if ADMIN_PASSWORD environment variable is set
+        admin_password = os.getenv("ADMIN_PASSWORD")
+        if admin_password:
+            admin = db.query(User).filter_by(username="admin").first()
+            if not admin:
+                # Validate password strength before creation
+                is_valid, msg = validate_password_strength(admin_password)
+                if is_valid:
+                    admin_user = User(username="admin", password=set_password(admin_password))
+                    db.add(admin_user)
+                    db.commit()
+                    print(f"✓ Admin user created successfully")
+                else:
+                    print(f"✗ Admin password does not meet security requirements: {msg}")
+        else:
+            print("ℹ️  ADMIN_PASSWORD not set. Skipping default admin creation. Set ADMIN_PASSWORD env var to create admin.")
+
 
 if __name__ == "__main__":
     import uvicorn
