@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row">
+    <div class="col-md-6">
+        <h3>Edit Employee</h3>
+        <form action="/employee/{{ employee.id }}/edit" method="POST" class="card p-4 shadow-sm">
+            <div class="mb-3">
+                <input type="text" name="name" value="{{ employee.full_name }}" placeholder="Full Name" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <input type="text" name="position" value="{{ employee.position }}" placeholder="Position" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <input type="email" name="email" value="{{ employee.email }}" placeholder="Email" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <input type="number" name="salary" value="{{ employee.salary }}" placeholder="Annual Salary" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <input type="text" name="department" value="{{ employee.department }}" placeholder="Department" class="form-control">
+            </div>
+            <div class="mb-3">
+                <input type="text" name="location" value="{{ employee.location }}" placeholder="Location" class="form-control">
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Update Employee</button>
+        </form>
+        <a href="/" class="btn btn-link mt-2">Back</a>
+    </div>
+</div>
+{% endblock %}

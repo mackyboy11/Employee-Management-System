@@ -23,251 +23,106 @@ def set_password(password):
 def verify_password(stored_hash, password):
     return check_password_hash(stored_hash, password)
 ```
+# Security Audit — Employee Management System
 
-### Password Strength Requirements
-Enforces strong passwords with:
-- ✅ Minimum 8 characters
-- ✅ At least one uppercase letter (A-Z)
-- ✅ At least one lowercase letter (a-z)
-- ✅ At least one digit (0-9)
-- ✅ At least one special character (!@#$%^&*)
+This document replaces the previous Flask-centric SECURITY.md and documents the actual security features present in this repository (FastAPI + Starlette + SQLAlchemy), plus actionable recommendations.
 
-**Protection Against**: Brute force attacks, dictionary attacks, weak passwords
-
----
-
-## 2. 🛡️ CSRF Protection
-
-### Cross-Site Request Forgery Prevention
-- **Technology**: Flask-WTF's CSRFProtect
-- **Implementation**: Automatic CSRF tokens for all POST/PUT/DELETE requests
-- **Usage**: All forms must include CSRF token
-
-```python
-csrf = CSRFProtect(app)
-```
-
-**Protection Against**: Cross-site request forgery attacks where malicious sites trick users into submitting unauthorized requests
+## High-level summary
+- Framework: FastAPI (Starlette)
+- DB: SQLAlchemy (declarative ORM)
+- Auth: Session-based (`starlette.middleware.sessions.SessionMiddleware`) using `SECRET_KEY`
+- Passwords: `werkzeug.security.generate_password_hash` / `check_password_hash`
+- Rate limiting: optional integration with `slowapi` (enabled only if installed)
+- Config: `python-dotenv` (`load_dotenv()`)
 
 ---
 
-## 3. ⚡ Rate Limiting
+## Security controls currently implemented (observed)
 
-### Request Rate Limiting
-- **Technology**: Flask-Limiter
-- **Global Limits**: 
-  - 200 requests per day
-  - 50 requests per hour
-- **Login Route**: 5 attempts per minute
-- **Register Route**: 3 attempts per minute
-
-```python
-@app.route('/login', methods=['GET', 'POST'])
-@limiter.limit("5 per minute")
-def login():
-    ...
-```
-
-**Protection Against**: 
-- Brute force password attacks
-- Account enumeration attacks
-- DoS (Denial of Service) attacks
-- Automated bot attacks
+- Secret-backed sessions: `SessionMiddleware` with `SECRET_KEY` signs cookies.
+- Password hashing: uses Werkzeug's `generate_password_hash()` and `check_password_hash()`.
+- Password policy: `validate_password_strength()` enforces length, uppercase, lowercase, digit, and special character.
+- Input sanitization: `sanitize_input()` attempts to limit length and uses `secure_filename()` for simple sanitization.
+- ORM usage: SQLAlchemy models and queries (no raw SQL strings were found in main code paths).
+- Rate limiting: integration points exist for `slowapi` and a `rate_limit()` decorator is used on auth routes when available.
+- Environment configuration: `load_dotenv()` and use of `DATABASE_URI` / `SECRET_KEY` from environment.
+- DB constraints: `unique=True` on username/email fields.
+- Template rendering: Jinja2 templates (autoescaping applies when used correctly).
 
 ---
 
-## 4. 🔒 Session Security
+## Gaps, risks and prioritized recommendations
 
-### Secure Session Configuration
-```python
-SESSION_COOKIE_SECURE = False  # Set True in production with HTTPS
-SESSION_COOKIE_HTTPONLY = True  # Prevents JavaScript access to cookies
-SESSION_COOKIE_SAMESITE = Lax   # Prevents CSRF attacks
-```
+1) Missing CSRF protection (High)
+    - Risk: The app uses session cookies and HTML forms for state changes but no CSRF tokens or dedicated CSRF middleware are present. Add CSRF protection for all forms or switch to cookie-with-samesite=strict + token pattern.
 
-**Features**:
-- **HttpOnly Cookies**: Protects against XSS attacks stealing session cookies
-- **SameSite**: Prevents cookies from being sent with cross-site requests
-- **Secret Key**: Cryptographically signs session cookies to prevent tampering
+2) `sanitize_input()` misuse (High)
+    - Risk: `werkzeug.utils.secure_filename()` is intended for filenames, not names or emails. Replace with explicit validators (e.g., email regex / email-validator package) and reject/normalize invalid input.
 
-**Protection Against**: Session hijacking, XSS-based cookie theft, CSRF attacks
+3) `SESSION_COOKIE_HTTPONLY` not enforced (High)
+    - Risk: The `.env.example` mentions `SESSION_COOKIE_HTTPONLY`, but the app does not set HttpOnly on session cookies; ensure `SessionMiddleware` sets `https_only`, `same_site`, and HttpOnly as appropriate.
 
----
+4) Default admin credentials on startup (High)
+    - Risk: `on_startup()` creates a default `admin` with a weak password (`password123`). Remove this behavior or require a secure admin password via env variable.
 
-## 5. 🗄️ SQL Injection Prevention
+5) Authorization model is minimal (Medium)
+    - Risk: Routes only check for presence of `user_id` in session. Implement role-based checks (admin vs user) to protect create/update/delete actions.
 
-### SQLAlchemy ORM
-- **Technology**: Flask-SQLAlchemy ORM
-- **Implementation**: All database queries use parameterized statements
-- **Example**: `User.query.filter_by(username=username).first()`
+6) Insufficient server-side validation (Medium)
+    - Risk: Email format, salary bounds/precision, and uniqueness checks should be validated before DB commit; return safe error messages.
 
-**Benefits**:
-- No raw SQL strings with user input
-- Automatic parameter escaping
-- Type safety
+7) No CSRF-safe API endpoints or token exchange for AJAX (Medium)
+    - If you plan to build an API used by JS clients, add a CSRF token endpoint or use stateless JWTs for API auth.
 
-**Protection Against**: SQL injection attacks that could expose or manipulate database data
+8) Dependency & packaging hygiene (Medium)
+    - Ensure all runtime dependencies (including `itsdangerous`) are pinned in `requirements.txt`.
 
----
+9) No audit logging for privileged actions (Low)
+    - Add logging for create/edit/delete operations and failed auth attempts.
 
-## 6. 🧹 Input Sanitization
-
-### Username Validation
-- Only alphanumeric characters and underscores
-- Minimum 3 characters
-- Pattern matching: `^[a-zA-Z0-9_]+$`
-
-```python
-def sanitize_input(user_input):
-    return secure_filename(user_input) if len(user_input) <= 100 else user_input[:100]
-```
-
-**Protection Against**: 
-- XSS (Cross-Site Scripting) attacks
-- Path traversal attacks
-- Injection attacks
+10) Security headers & HTTPS enforcement (Low)
+    - Add headers: `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, and enable HTTPS/redirects in production.
 
 ---
 
-## 7. 🔑 Environment Variables
+## Quick actionable fixes (prioritized)
 
-### Secure Configuration Management
-- **Technology**: python-dotenv
-- **File**: `.env` (excluded from version control via .gitignore)
-- **Usage**: Sensitive data stored outside source code
+1) Short-term (apply immediately)
+    - Remove automatic default admin creation or require `ADMIN_PASSWORD` env variable. Example: only create admin if `ADMIN_PASSWORD` exists and is strong.
+    - Set `SESSION_COOKIE_HTTPONLY=True` when adding `SessionMiddleware` (via app settings / read env).
+    - Add server-side validators: use `email-validator` for emails and ensure `salary` is positive and within reasonable range.
+    - Add `itsdangerous` to dependencies (Starlette/Session middleware requires it).
 
-```python
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-key')
-```
+2) Mid-term
+    - Add CSRF protection: either integrate `starlette-wtf` or implement per-form tokens stored in session and validated on POST.
+    - Implement role checks on routes that modify data.
+    - Add input validation schemas (Pydantic models/validators) for incoming form data.
 
-**Stored Securely**:
-- SECRET_KEY
-- DATABASE_URI
-- Session configuration
-
-**Protection Against**: Credential exposure in source code, configuration leaks
-
----
-
-## 8. 🚫 Authentication & Authorization
-
-### Access Control
-- Session-based authentication
-- Protected routes check for `user_id` in session
-- Automatic redirect to login for unauthorized access
-
-```python
-@app.route('/')
-def index():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-```
-
-**Protection Against**: Unauthorized access to protected resources
+3) Long-term
+    - Introduce audit logging for security events.
+    - Add automated dependency scanning and CI checks for known vulns.
+    - Consider 2FA for admin accounts and account lockout after multiple failed attempts.
 
 ---
 
-## 9. 🔄 Logout Functionality
+## How to test the most critical gaps
 
-### Secure Session Termination
-```python
-@app.route('/logout')
-def logout():
-    session.clear()
-    flash('✓ You have been logged out.', 'success')
-    return redirect(url_for('login'))
-```
-
-**Features**:
-- Complete session clearing
-- Immediate invalidation of authentication
+- CSRF: attempt POSTing to `/add_employee` without a CSRF token (or with an invalid token) and confirm the server rejects the request.
+- Default admin: remove the auto-creation or set `ADMIN_PASSWORD` and confirm startup does not create `admin` with weak password.
+- HttpOnly cookie: inspect the session cookie in your browser and confirm `HttpOnly` is present.
+- Input validation: attempt to create users with invalid emails and verify server-side rejection.
 
 ---
 
-## 10. 📊 User Feedback
+## Recommended next implementation checklist
 
-### Flash Messages with Categories
-- Color-coded alerts (success/danger)
-- Clear error messages without exposing sensitive info
-- User-friendly guidance
-
-**Protection Against**: Information leakage about system internals
-
----
-
-## Security Best Practices Applied
-
-### ✅ Implemented
-1. Password hashing with PBKDF2
-2. CSRF protection on all forms
-3. Rate limiting on authentication endpoints
-4. HttpOnly and SameSite cookies
-5. SQL injection prevention via ORM
-6. Input validation and sanitization
-7. Environment variable configuration
-8. Session-based authentication
-9. Strong password requirements
-10. Username validation
-
-### ⚠️ Production Recommendations
-1. **HTTPS Only**: Set `SESSION_COOKIE_SECURE=True`
-2. **Strong Secret Key**: Generate cryptographically secure key
-3. **Database Backups**: Regular automated backups
-4. **Error Logging**: Implement proper error tracking
-5. **Security Headers**: Add Content-Security-Policy, X-Frame-Options
-6. **Account Lockout**: Lock accounts after failed login attempts
-7. **Two-Factor Authentication**: Consider adding 2FA
-8. **Password Reset**: Implement secure password recovery
-9. **Audit Logging**: Track security-relevant events
-10. **Regular Updates**: Keep all dependencies updated
+1. Add `requirements.txt` with pinned versions (include `itsdangerous`, `fastapi`, `uvicorn`, `sqlalchemy`, `jinja2`, `python-dotenv`, `slowapi` if used).
+2. Configure `SessionMiddleware` to set `https_only`, `same_site`, and `HttpOnly` flags from env.
+3. Remove or protect the default admin creation logic.
+4. Implement server-side validators (Pydantic or `email-validator`) and sanitize inputs correctly.
+5. Add CSRF protection solution for templates and form POSTs.
+6. Add role-based checks for edit/delete routes.
 
 ---
 
-## Testing Security Features
-
-### Test Rate Limiting
-```bash
-# Try logging in more than 5 times in a minute
-curl -X POST http://localhost:5000/login -d "username=test&password=test"
-```
-
-### Test Password Strength
-Try creating accounts with weak passwords to verify validation
-
-### Test CSRF Protection
-Submit forms without CSRF token to verify rejection
-
----
-
-## Security Vulnerability Mitigation Summary
-
-| Vulnerability | Protection | Status |
-|---------------|------------|--------|
-| SQL Injection | SQLAlchemy ORM | ✅ Protected |
-| XSS | Input sanitization | ✅ Protected |
-| CSRF | Flask-WTF CSRF tokens | ✅ Protected |
-| Brute Force | Rate limiting | ✅ Protected |
-| Weak Passwords | Password validation | ✅ Protected |
-| Session Hijacking | Secure cookies | ✅ Protected |
-| Credential Exposure | Environment variables | ✅ Protected |
-| Unauthorized Access | Session authentication | ✅ Protected |
-
----
-
-## Configuration Files
-
-### .env (Not in Git)
-Contains sensitive configuration - never commit to version control
-
-### .gitignore
-Ensures sensitive files are excluded:
-- `.env`
-- `*.db`
-- `.venv/`
-- `__pycache__/`
-
----
-
-## Conclusion
-
-This application implements **industry-standard security practices** suitable for production environments with proper configuration. All common web vulnerabilities (OWASP Top 10) are addressed through multiple layers of defense.
+If you’d like, I can implement the short-term fixes now: add `requirements.txt`, set HttpOnly on sessions, remove default admin creation, and add basic email/salary validation. Tell me which of these you'd like me to do first.

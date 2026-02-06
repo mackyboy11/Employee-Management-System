@@ -74,6 +74,9 @@ class Employee(Base):
     position = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
     salary = Column(Float, nullable=False)
+    department = Column(String(100), nullable=True)
+    location = Column(String(100), nullable=True)
+    status = Column(String(20), default="active", nullable=False)
 
 # --- PASSWORD MODULE (Logic) ---
 def set_password(password):
@@ -99,7 +102,7 @@ def validate_password_strength(password):
         return False, "Password must contain at least one lowercase letter"
     if not re.search(r'[0-9]', password):
         return False, "Password must contain at least one digit"
-    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+    if not re.search(r'[!@#$%^&*(),.?_":{}|<>]', password):
         return False, "Password must contain at least one special character"
     return True, "Password is strong"
 
@@ -155,7 +158,7 @@ def login_post(
         request.session["permanent"] = True
         set_flash(request, "✓ Login successful!", "success")
         return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
-    set_flash(request, "❌ Invalid credentials. Please try again.", "danger")
+    set_flash(request, "Invalid credentials. Please try again.", "danger")
     return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
 
 @app.get("/register", response_class=HTMLResponse, name="register")
@@ -185,15 +188,15 @@ def register_post(
 
     existing_user = db.query(User).filter_by(username=username).first()
     if existing_user:
-        set_flash(request, "❌ Username already exists", "danger")
+        set_flash(request, "Username already exists", "danger")
         return RedirectResponse(url="/register", status_code=HTTP_303_SEE_OTHER)
     if password != confirm_password:
-        set_flash(request, "❌ Passwords do not match", "danger")
+        set_flash(request, "Passwords do not match", "danger")
         return RedirectResponse(url="/register", status_code=HTTP_303_SEE_OTHER)
 
     is_valid, message = validate_password_strength(password)
     if not is_valid:
-        set_flash(request, f"❌ {message}", "danger")
+        set_flash(request, f"{message}", "danger")
         return RedirectResponse(url="/register", status_code=HTTP_303_SEE_OTHER)
 
     new_user = User(username=username, password=set_password(password))
@@ -215,21 +218,120 @@ def add_employee(
     position: str = Form(...),
     email: str = Form(...),
     salary: float = Form(...),
+    department: str = Form(None),
+    location: str = Form(None),
     db: Session = Depends(get_db)
 ):
     if "user_id" not in request.session:
-        set_flash(request, "❌ Please log in to continue.", "danger")
+        set_flash(request, "Please log in to continue.", "danger")
         return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
 
     new_emp = Employee(
         full_name=sanitize_input(name),
         position=sanitize_input(position),
         email=sanitize_input(email),
-        salary=salary
+        salary=salary,
+        department=sanitize_input(department) if department else None,
+        location=sanitize_input(location) if location else None,
     )
     db.add(new_emp)
     db.commit()
     set_flash(request, "✓ Employee added successfully!", "success")
+    return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
+
+@app.get("/employee/{emp_id}", response_class=HTMLResponse, name="view_employee")
+def view_employee(request: Request, emp_id: int, db: Session = Depends(get_db)):
+    if "user_id" not in request.session:
+        return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+    emp = db.query(Employee).filter_by(id=emp_id).first()
+    if not emp:
+        set_flash(request, "Employee not found.", "danger")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(
+        "employee_detail.html",
+        {"request": request, "employee": emp, "flash": pop_flash(request)}
+    )
+
+
+@app.get("/employee/{emp_id}/edit", response_class=HTMLResponse, name="edit_employee_get")
+def edit_employee_get(request: Request, emp_id: int, db: Session = Depends(get_db)):
+    if "user_id" not in request.session:
+        return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+    emp = db.query(Employee).filter_by(id=emp_id).first()
+    if not emp:
+        set_flash(request, "Employee not found.", "danger")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(
+        "edit_employee.html",
+        {"request": request, "employee": emp, "flash": pop_flash(request)}
+    )
+
+
+@app.post("/employee/{emp_id}/edit", name="edit_employee_post")
+def edit_employee_post(
+    request: Request,
+    emp_id: int,
+    name: str = Form(...),
+    position: str = Form(...),
+    email: str = Form(...),
+    salary: float = Form(...),
+    department: str = Form(None),
+    location: str = Form(None),
+    db: Session = Depends(get_db),
+):
+    if "user_id" not in request.session:
+        set_flash(request, "Please log in to continue.", "danger")
+        return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+    emp = db.query(Employee).filter_by(id=emp_id).first()
+    if not emp:
+        set_flash(request, "Employee not found.", "danger")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
+    emp.full_name = sanitize_input(name)
+    emp.position = sanitize_input(position)
+    emp.email = sanitize_input(email)
+    emp.salary = salary
+    emp.department = sanitize_input(department) if department else None
+    emp.location = sanitize_input(location) if location else None
+    db.commit()
+    set_flash(request, "✓ Employee updated successfully!", "success")
+    return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
+
+@app.post("/employee/{emp_id}/delete", name="delete_employee")
+def delete_employee(request: Request, emp_id: int, db: Session = Depends(get_db)):
+    if "user_id" not in request.session:
+        set_flash(request, "Please log in to continue.", "danger")
+        return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+    emp = db.query(Employee).filter_by(id=emp_id).first()
+    if not emp:
+        set_flash(request, "Employee not found.", "danger")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+    db.delete(emp)
+    db.commit()
+    set_flash(request, "✓ Employee deleted successfully!", "success")
+    return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+
+
+@app.post("/employee/{emp_id}/toggle_leave", name="toggle_leave")
+def toggle_leave(request: Request, emp_id: int, db: Session = Depends(get_db)):
+    if "user_id" not in request.session:
+        set_flash(request, "Please log in to continue.", "danger")
+        return RedirectResponse(url="/login", status_code=HTTP_303_SEE_OTHER)
+    emp = db.query(Employee).filter_by(id=emp_id).first()
+    if not emp:
+        set_flash(request, "Employee not found.", "danger")
+        return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
+    
+    if emp.status == "active":
+        emp.status = "on_leave"
+        set_flash(request, f"✓ {emp.full_name} is now on leave.", "success")
+    else:
+        emp.status = "active"
+        set_flash(request, f"✓ {emp.full_name} has returned from leave.", "success")
+    
+    db.commit()
     return RedirectResponse(url="/", status_code=HTTP_303_SEE_OTHER)
 
 @app.on_event("startup")
